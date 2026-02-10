@@ -1,0 +1,310 @@
+(ns job-hunter.scraper
+  "Site-specific scraping via multimethod dispatch on :type.
+   Each method returns a seq of posting maps:
+   {:url string, :title string, :text string, :source keyword}"
+  (:require [etaoin.api :as e]
+            [clojure.string :as str]
+            [clojure.tools.logging :as log]))
+
+;; ---------------------------------------------------------------------------
+;; Helpers
+;; ---------------------------------------------------------------------------
+
+(defn- safe-text
+  "Extract text from an element, returning empty string on failure."
+  [driver el]
+  (try (e/get-element-text-el driver el)
+       (catch Exception _ "")))
+
+(defn- safe-attr
+  "Extract attribute from an element, returning nil on failure."
+  [driver el attr]
+  (try (e/get-element-attr-el driver el attr)
+       (catch Exception _ nil)))
+
+(defn- polite-pause
+  "Sleep for delay-ms to avoid hammering servers."
+  [delay-ms]
+  (when (pos? delay-ms)
+    (Thread/sleep delay-ms)))
+
+(defn- resolve-url
+  "If href is relative, prepend base-url."
+  [href base-url]
+  (cond
+    (nil? href) nil
+    (str/starts-with? href "http") href
+    (str/starts-with? href "//") (str "https:" href)
+    :else (str (str/replace base-url #"/$" "") href)))
+
+(defn- truncate
+  "Truncate text to max-len chars for titles."
+  [s max-len]
+  (if (> (count s) max-len)
+    (str (subs s 0 max-len) "...")
+    s))
+
+(defn- extract-title-from-text
+  "Pull a reasonable title from the first line of posting text.
+   HN Who's Hiring comments often start with 'Company | Role | Location'."
+  [text]
+  (let [first-line (first (str/split-lines text))]
+    (truncate (str/trim (or first-line "Untitled")) 120)))
+
+;; ---------------------------------------------------------------------------
+;; Multimethod: dispatch on site :type
+;; ---------------------------------------------------------------------------
+
+(defmulti scrape-site
+  "Given a browser driver and site config map, return a seq of posting maps."
+  (fn [_driver site-config _opts] (:type site-config)))
+
+(defmethod scrape-site :default [_ site-config _]
+  (log/warn "No scraper for site type:" (:type site-config) "— skipping" (:id site-config))
+  [])
+
+;; ---------------------------------------------------------------------------
+;; :hn — Hacker News "Who's Hiring" threads
+;; ---------------------------------------------------------------------------
+;; Structure: single page (paginated via "More" link) of comments.
+;; Top-level comments (indent=0) are job postings.
+;; Each comment lives in a tr.athing.comtr with:
+;;   - td.ind img[width] indicating nesting depth (0 = top-level)
+;;   - span.commtext containing the text
+;;   - a with href "item?id=NNNNN" for the permalink
+
+(defn- hn-extract-comments
+  "Extract top-level comments from the currently loaded HN page."
+  [driver]
+  (let [comment-els (e/query-all driver {:css "tr.athing.comtr"})]
+    (reduce
+      (fn [acc el]
+        (let [;; Check indent — top-level comments have width=0 on the spacer img
+              indent-img (try (e/child driver el {:css "td.ind img"})
+                              (catch Exception _ nil))
+              indent     (if indent-img
+                           (parse-long (or (safe-attr driver indent-img :width) "40"))
+                           40)]
+          (if (zero? indent)
+            (let [text-el   (try (e/child driver el {:css "span.commtext"})
+                                 (catch Exception _ nil))
+                  text      (if text-el (safe-text driver text-el) "")
+                  ;; Find the permalink (age link with item?id=)
+                  age-link  (try (e/child driver el {:css "span.age a"})
+                                 (catch Exception _ nil))
+                  href      (when age-link (safe-attr driver age-link :href))
+                  post-url  (when href
+                              (if (str/starts-with? href "http")
+                                href
+                                (str "https://news.ycombinator.com/" href)))]
+              (if (str/blank? text)
+                acc
+                (conj acc {:url    (or post-url (str "hn-comment-" (count acc)))
+                           :title  (extract-title-from-text text)
+                           :text   text
+                           :source :hn-who-is-hiring})))
+            acc)))
+      []
+      comment-els)))
+
+(defn- hn-load-more
+  "Click the 'More' link if present. Returns true if more pages loaded."
+  [driver]
+  (try
+    (let [more-link (e/query driver {:css "a.morelink"})]
+      (when more-link
+        (e/click-el driver more-link)
+        (e/wait-visible driver {:css "tr.athing.comtr"})
+        true))
+    (catch Exception _ false)))
+
+(defmethod scrape-site :hn [driver {:keys [url name]} {:keys [request-delay-ms max-postings-per-site]}]
+  (log/info "Scraping" name "—" url)
+  (e/go driver url)
+  (e/wait-visible driver {:css "tr.athing.comtr"})
+  (loop [all-comments []
+         page 1]
+    (let [page-comments (hn-extract-comments driver)
+          combined      (into all-comments page-comments)]
+      (log/info "  Page" page ":" (count page-comments) "postings (" (count combined) "total)")
+      (if (and (< (count combined) max-postings-per-site)
+               (< page 5))  ;; safety: max 5 pages
+        (do
+          (polite-pause request-delay-ms)
+          (if (hn-load-more driver)
+            (recur combined (inc page))
+            combined))
+        combined))))
+
+;; ---------------------------------------------------------------------------
+;; :discourse — Discourse forums (Elixir Forum, etc.)
+;; ---------------------------------------------------------------------------
+;; Topic list page has links in tr.topic-list-item > td.main-link a.title
+;; Topic pages have post content in .cooked class
+
+(defmethod scrape-site :discourse [driver {:keys [url name]} {:keys [request-delay-ms max-postings-per-site]}]
+  (log/info "Scraping" name "—" url)
+  (e/go driver url)
+  (polite-pause 2000)  ;; Discourse can be slow to render
+  (let [topic-links (try (e/query-all driver {:css "a.title.raw-link"})
+                         (catch Exception _
+                           (try (e/query-all driver {:css "a.title"})
+                                (catch Exception _ []))))
+        link-data   (reduce
+                      (fn [acc el]
+                        (let [href  (safe-attr driver el :href)
+                              title (safe-text driver el)]
+                          (if (and href (not (str/blank? title)))
+                            (conj acc {:href (resolve-url href url)
+                                       :title (str/trim title)})
+                            acc)))
+                      []
+                      (take max-postings-per-site topic-links))]
+    (log/info "  Found" (count link-data) "topic links")
+    (reduce
+      (fn [postings {:keys [href title]}]
+        (polite-pause request-delay-ms)
+        (log/info "  Loading:" title)
+        (try
+          (e/go driver href)
+          (polite-pause 1500)
+          (let [content-els (e/query-all driver {:css ".cooked"})
+                text        (str/join "\n\n" (map #(safe-text driver %) content-els))]
+            (conj postings {:url    href
+                            :title  title
+                            :text   (if (str/blank? text) title text)
+                            :source :discourse}))
+          (catch Exception ex
+            (log/warn "  Failed to load topic:" title (.getMessage ex))
+            postings)))
+      []
+      link-data)))
+
+;; ---------------------------------------------------------------------------
+;; :reddit — Reddit subreddits via old.reddit.com
+;; ---------------------------------------------------------------------------
+;; old.reddit.com structure:
+;;   div.thing[data-url] contains each post
+;;   a.title has the post title + href
+;;   Self posts have the text on the post page in div.usertext-body .md
+
+(defmethod scrape-site :reddit [driver {:keys [url name]} {:keys [request-delay-ms max-postings-per-site]}]
+  (log/info "Scraping" name "—" url)
+  (let [old-url (str/replace url "www.reddit.com" "old.reddit.com")]
+    (e/go driver old-url)
+    (polite-pause 2000)
+    (let [post-links (try (e/query-all driver {:css "#siteTable div.thing a.title"})
+                          (catch Exception _
+                            (try (e/query-all driver {:css "a.title"})
+                                 (catch Exception _ []))))
+          link-data  (reduce
+                       (fn [acc el]
+                         (let [href  (safe-attr driver el :href)
+                               title (safe-text driver el)]
+                           (if (and href (not (str/blank? title)))
+                             (conj acc {:href (resolve-url href "https://old.reddit.com")
+                                        :title (str/trim title)})
+                             acc)))
+                       []
+                       (take max-postings-per-site post-links))]
+      (log/info "  Found" (count link-data) "posts")
+      (reduce
+        (fn [postings {:keys [href title]}]
+          (polite-pause request-delay-ms)
+          (log/info "  Loading:" title)
+          (try
+            (e/go driver href)
+            (polite-pause 1500)
+            (let [body-els (e/query-all driver {:css ".usertext-body .md"})
+                  text     (str/join "\n\n" (map #(safe-text driver %) body-els))]
+              (conj postings {:url    href
+                              :title  title
+                              :text   (if (str/blank? text) title text)
+                              :source :reddit}))
+            (catch Exception ex
+              (log/warn "  Failed to load post:" title (.getMessage ex))
+              postings)))
+        []
+        link-data))))
+
+;; ---------------------------------------------------------------------------
+;; :css — Generic CSS-selector-based scraping
+;; ---------------------------------------------------------------------------
+;; Config keys:
+;;   :listing-selector  — CSS for links on the listing page
+;;   :link-attr         — attribute to read for URL (default :href)
+;;   :content-selector  — CSS for content on the detail page
+;;   :base-url          — prepend to relative links
+
+(defmethod scrape-site :css [driver {:keys [url name listing-selector link-attr
+                                            content-selector base-url]
+                                     :or {link-attr :href}}
+                              {:keys [request-delay-ms max-postings-per-site]}]
+  (log/info "Scraping" name "—" url)
+  (e/go driver url)
+  (polite-pause 2000)
+  (let [link-els  (try (e/query-all driver {:css listing-selector})
+                       (catch Exception _ []))
+        link-data (reduce
+                    (fn [acc el]
+                      (let [href  (safe-attr driver el link-attr)
+                            title (safe-text driver el)]
+                        (if href
+                          (conj acc {:href  (resolve-url href (or base-url url))
+                                     :title (if (str/blank? title) href (str/trim title))})
+                          acc)))
+                    []
+                    (take max-postings-per-site link-els))]
+    (log/info "  Found" (count link-data) "links via" listing-selector)
+    (if content-selector
+      ;; Visit each link and extract content
+      (reduce
+        (fn [postings {:keys [href title]}]
+          (polite-pause request-delay-ms)
+          (log/info "  Loading:" title)
+          (try
+            (e/go driver href)
+            (polite-pause 1500)
+            (let [content-els (e/query-all driver {:css content-selector})
+                  text        (str/join "\n\n" (map #(safe-text driver %) content-els))]
+              (conj postings {:url    href
+                              :title  title
+                              :text   (if (str/blank? text) title text)
+                              :source (:id (meta link-data))}))
+            (catch Exception ex
+              (log/warn "  Failed to load:" title (.getMessage ex))
+              postings)))
+        []
+        link-data)
+      ;; No content selector — listing titles are the postings themselves
+      (mapv (fn [{:keys [href title]}]
+              {:url href :title title :text title :source :css})
+            link-data))))
+
+;; ---------------------------------------------------------------------------
+;; :twitter — Stub
+;; ---------------------------------------------------------------------------
+
+(defmethod scrape-site :twitter [_ {:keys [name]} _]
+  (log/warn "Twitter scraping not implemented." name
+            "Use Twitter API v2 or Nitter. Skipping.")
+  [])
+
+;; ---------------------------------------------------------------------------
+;; Public API
+;; ---------------------------------------------------------------------------
+
+(defn scrape-all-sites
+  "Scrape all configured sites. Returns a flat seq of posting maps.
+   driver — etaoin browser driver
+   sites  — seq of site config maps from config.edn
+   opts   — {:request-delay-ms N, :max-postings-per-site N}"
+  [driver sites opts]
+  (into []
+        (mapcat (fn [site]
+                  (try
+                    (scrape-site driver site opts)
+                    (catch Exception ex
+                      (log/error ex "Failed to scrape site:" (:id site))
+                      []))))
+        sites))

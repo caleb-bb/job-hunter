@@ -1,0 +1,75 @@
+;; job-hunter configuration
+;; Edit this file to add sites, keywords, and tune behavior.
+
+{;; ===== SITES =====
+ ;; Each site needs :id, :type, :url, and type-specific selectors.
+ ;; :type determines which scraper multimethod runs.
+ ;;
+ ;; Supported types:
+ ;;   :hn          — Hacker News "Who's Hiring" thread (auto-extracts top-level comments)
+ ;;   :discourse   — Discourse forums like Elixir Forum (topic list → topic pages)
+ ;;   :reddit      — Reddit subreddits (uses old.reddit.com for reliable scraping)
+ ;;   :css         — Generic: you provide CSS selectors for listing links + content
+ ;;   :twitter     — Stub. Twitter/X requires API access; see notes below.
+
+ :sites
+ [;; Hacker News "Who's Hiring" — monthly thread
+  ;; IMPORTANT: Update :url each month. Find current thread at:
+  ;; https://news.ycombinator.com/submitted?id=whoishiring
+  {:id   :hn-who-is-hiring
+   :type :hn
+   :url  "https://news.ycombinator.com/item?id=42575537"  ;; ← update monthly
+   :name "HN Who's Hiring"}
+
+  ;; Elixir Forum job board (Discourse)
+  {:id   :elixir-forum
+   :type :discourse
+   :url  "https://elixirforum.com/c/work/elixir-jobs/16"
+   :name "Elixir Forum Jobs"}
+
+  ;; Reddit
+  {:id   :reddit-elixir-jobs
+   :type :reddit
+   :url  "https://old.reddit.com/r/elixirjobs/"
+   :name "r/elixirjobs"}
+
+  ;; Twitter/X — NOT FUNCTIONAL via scraping.
+  ;; Twitter requires authentication and aggressively blocks bots.
+  ;; Options: (a) Use Twitter API v2 with bearer token, or
+  ;;          (b) use Nitter (https://nitter.net/ElixirJobsOffer) if still alive, or
+  ;;          (c) skip and add RSS feed support later.
+  ;; Uncomment below if you implement API-based fetching:
+  #_{:id   :elixir-jobs-twitter
+     :type :twitter
+     :url  "https://x.com/ElixirJobsOffer"
+     :name "Elixir Jobs Twitter"}
+
+  ;; === ADD MORE SITES HERE ===
+  ;; Generic CSS example (uncomment and customize):
+  #_{:id               :example-board
+     :type             :css
+     :url              "https://example.com/jobs"
+     :name             "Example Board"
+     :listing-selector "a.job-title"         ;; CSS for links on listing page
+     :link-attr        :href                 ;; attribute containing the URL (default :href)
+     :content-selector ".job-description"    ;; CSS for content on detail page
+     :base-url         "https://example.com" ;; prepend if links are relative
+     }]
+
+ ;; ===== ALLOWLIST KEYWORDS =====
+ ;; A posting's title + text must contain at least one of these (case-insensitive).
+ ;; Broader terms cast a wider net; narrow terms reduce noise.
+ :include-keywords
+ ["elixir" "phoenix" "liveview" "erlang" "beam"
+  "clojure" "clojurescript" "functional programming"
+  "technical writer" "technical writing" "documentation"
+  ;; Add more as needed:
+  ;; "rust" "haskell" "scala" "remote"
+  ]
+
+ ;; ===== BEHAVIOR =====
+ :request-delay-ms  2000   ;; pause between page loads (be polite)
+ :openai-model      "gpt-4o-mini"  ;; cost-effective; "gpt-4o" for higher quality
+ :headless?         true   ;; false to watch the browser (debugging)
+ :max-postings-per-site 50 ;; safety cap
+ }
