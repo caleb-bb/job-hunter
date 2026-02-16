@@ -96,6 +96,7 @@
                     "- Reference the candidate's goals where they align with the role\n"
                     "- Sound human and authentic, not generic or sycophantic\n"
                     "- Close with a clear call to action\n\n"
+                    "- Contain no emdashes \n\n"
                     "## Job Posting\n"
                     "Title: " title "\n"
                     "URL: " url "\n\n"

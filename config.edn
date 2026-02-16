@@ -60,9 +60,9 @@
  ;; A posting's title + text must contain at least one of these (case-insensitive).
  ;; Broader terms cast a wider net; narrow terms reduce noise.
  :include-keywords
- ["elixir" "phoenix" "liveview" "erlang" "beam"
+ ["elixir" "phoenix" "liveview" "erlang" "the beam"
   "clojure" "clojurescript" "functional programming"
-  "technical writer" "technical writing" "documentation"
+  "technical writer" "technical writing" "write documentation"
   ;; Add more as needed:
   ;; "rust" "haskell" "scala" "remote"
   ]
