@@ -43,6 +43,72 @@
       (str (str/join " " (take max-words words)) "\n\n[...truncated]"))))
 
 ;; ---------------------------------------------------------------------------
+;; Location Filter
+;; ---------------------------------------------------------------------------
+
+(defn- strip-code-fences
+  "Remove markdown code fences (```json ... ```) that LLMs love to add."
+  [s]
+  (-> s
+      str/trim
+      (str/replace #"^```(?:json)?\s*" "")
+      (str/replace #"\s*```$" "")
+      str/trim))
+
+(defn- classify-location-batch
+  "Classify a batch of posting titles as US-available or not.
+   Returns a vector of booleans (true = US, false = not)."
+  [titles model]
+  (let [numbered (str/join "\n" (map-indexed #(str (inc %1) ". " %2) titles))
+        prompt   (str "Classify each job posting by whether it is available to a worker "
+                      "in the United States. Respond with ONLY a JSON array of booleans.\n\n"
+                      "true  = available to US workers\n"
+                      "false = clearly restricted to outside the US\n\n"
+                      "Rules:\n"
+                      "- US city/state/region → true\n"
+                      "- \"Remote\" with no country restriction → true\n"
+                      "- \"Remote (US)\" or \"Remote US\" → true\n"
+                      "- Non-US country/city with no US option → false\n"
+                      "- \"Remote Europe\", \"Remote UK\", \"Remote Australia\" → false\n"
+                      "- Mixed locations that include at least one US location → true\n"
+                      "- \"LATAM\" or \"Latin America\" only → false\n\n"
+                      "Postings:\n" numbered "\n\n"
+                      "Respond with ONLY a JSON array like [true, false, true, ...]. "
+                      "No other text. Array length must be exactly " (count titles) ".")
+        result   (chat-completion model [{:role "user" :content prompt}])]
+    (when result
+      (try
+        (let [parsed (json/parse-string (strip-code-fences result))]
+          (if (and (sequential? parsed) (= (count parsed) (count titles)))
+            (vec parsed)
+            (do (log/warn "Location batch: wrong length — expected" (count titles) "got" (count parsed))
+                (vec (repeat (count titles) true)))))
+        (catch Exception _
+          (log/warn "Failed to parse location classification:" result)
+          (vec (repeat (count titles) true)))))))
+
+(defn filter-us-postings
+  "Filter postings to only those available to US-based workers.
+   Uses LLM to classify locations from posting titles in batches."
+  [postings model]
+  (let [batch-size 25
+        batches    (partition-all batch-size postings)
+        n-batches  (count (seq batches))]
+    (log/info "Location filter: classifying" (count postings) "postings in" n-batches "batches")
+    (vec
+      (mapcat
+        (fn [batch]
+          (let [titles  (mapv :title batch)
+                flags   (or (classify-location-batch titles model)
+                            (vec (repeat (count batch) true)))
+                results (keep-indexed (fn [i posting] (when (nth flags i true) posting)) batch)
+                dropped (- (count batch) (count results))]
+            (when (pos? dropped)
+              (log/info "  Dropped" dropped "non-US postings"))
+            results))
+        batches))))
+
+;; ---------------------------------------------------------------------------
 ;; Suitability Analysis
 ;; ---------------------------------------------------------------------------
 

@@ -84,6 +84,14 @@
             _            (log/info "═══ STEP 2: Filtering ═══")
             filtered     (filter/apply-allowlist (:include-keywords config) all-postings)
 
+            ;; Step 2b: Location filter (LLM-based)
+            filtered     (if (:location-filter config)
+                           (do (log/info "═══ STEP 2b: Location filter ═══")
+                               (openai/filter-us-postings
+                                 filtered
+                                 (or (:openai-model config) "gpt-4o-mini")))
+                           filtered)
+
             ;; Step 3: Deduplicate against applied.edn
             _            (log/info "═══ STEP 3: Deduplicating ═══")
             new-postings (tracker/filter-new applied filtered)

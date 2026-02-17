@@ -74,38 +74,43 @@
 ;;   - a with href "item?id=NNNNN" for the permalink
 
 (defn- hn-extract-comments
-  "Extract top-level comments from the currently loaded HN page."
+  "Extract top-level comments from the currently loaded HN page.
+   Uses JavaScript for reliable extraction — avoids e/child issues with
+   HN's nested table structure and is much faster (1 call vs hundreds)."
   [driver]
-  (let [comment-els (e/query-all driver {:css "tr.athing.comtr"})]
+  (let [raw (e/js-execute driver
+              "var rows = document.querySelectorAll('tr.athing.comtr');
+               var results = [];
+               for (var i = 0; i < rows.length; i++) {
+                 var tr = rows[i];
+                 var ind = tr.querySelector('td.ind');
+                 if (ind && ind.getAttribute('indent') === '0') {
+                   var textEl = tr.querySelector('.commtext');
+                   var ageLink = tr.querySelector('span.age a');
+                   if (textEl) {
+                     results.push({
+                       text: textEl.innerText || '',
+                       href: ageLink ? ageLink.getAttribute('href') : null
+                     });
+                   }
+                 }
+               }
+               return results;")]
+    (log/debug "JS extracted" (count raw) "top-level comments from page")
     (reduce
-      (fn [acc el]
-        (let [;; Check indent — top-level comments have width=0 on the spacer img
-              indent-img (try (e/child driver el {:css "td.ind img"})
-                              (catch Exception _ nil))
-              indent     (if indent-img
-                           (parse-long (or (safe-attr driver indent-img :width) "40"))
-                           40)]
-          (if (zero? indent)
-            (let [text-el   (try (e/child driver el {:css "span.commtext"})
-                                 (catch Exception _ nil))
-                  text      (if text-el (safe-text driver text-el) "")
-                  ;; Find the permalink (age link with item?id=)
-                  age-link  (try (e/child driver el {:css "span.age a"})
-                                 (catch Exception _ nil))
-                  href      (when age-link (safe-attr driver age-link :href))
-                  post-url  (when href
-                              (if (str/starts-with? href "http")
-                                href
-                                (str "https://news.ycombinator.com/" href)))]
-              (if (str/blank? text)
-                acc
-                (conj acc {:url    (or post-url (str "hn-comment-" (count acc)))
-                           :title  (extract-title-from-text text)
-                           :text   text
-                           :source :hn-who-is-hiring})))
-            acc)))
+      (fn [acc {:keys [text href]}]
+        (if (str/blank? text)
+          acc
+          (let [post-url (when href
+                           (if (str/starts-with? href "http")
+                             href
+                             (str "https://news.ycombinator.com/" href)))]
+            (conj acc {:url    (or post-url (str "hn-comment-" (count acc)))
+                       :title  (extract-title-from-text text)
+                       :text   text
+                       :source :hn-who-is-hiring}))))
       []
-      comment-els)))
+      raw)))
 
 (defn- hn-load-more
   "Click the 'More' link if present. Returns true if more pages loaded."
