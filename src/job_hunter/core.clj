@@ -2,6 +2,7 @@
   "Pipeline orchestration: scrape → filter → deduplicate → analyze → write.
    Entry point: -main or (run!) from REPL."
   (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [etaoin.api :as e]
@@ -13,14 +14,46 @@
   (:gen-class))
 
 ;; ---------------------------------------------------------------------------
+;; Site state (last-modified timestamps, persisted separately from config)
+;; ---------------------------------------------------------------------------
+
+(def ^:private site-state-path "site-state.edn")
+
+(defn- load-site-state
+  "Load {site-id last-modified-string} from site-state.edn."
+  []
+  (try
+    (if (.exists (io/file site-state-path))
+      (let [data (edn/read-string (slurp site-state-path))]
+        (if (map? data) data {}))
+      {})
+    (catch Exception _ {})))
+
+(defn- save-site-state!
+  "Persist {site-id last-modified-string} to site-state.edn."
+  [state]
+  (spit site-state-path (pr-str state))
+  (log/info "Saved site state for" (count state) "sites"))
+
+(defn- merge-site-state
+  "Merge persisted :last-modified values into site config maps."
+  [sites state]
+  (mapv (fn [site]
+          (assoc site :last-modified (get state (:id site))))
+        sites))
+
+;; ---------------------------------------------------------------------------
 ;; Config
 ;; ---------------------------------------------------------------------------
 
 (defn load-config
-  "Read config.edn from project root."
+  "Read config.edn from project root. Merges persisted site state
+   (last-modified timestamps) into each site map."
   ([] (load-config "config.edn"))
   ([path]
-   (let [config (edn/read-string (slurp path))]
+   (let [config (edn/read-string (slurp path))
+         state  (load-site-state)
+         config (update config :sites merge-site-state state)]
      (log/info "Loaded config:" (count (:sites config)) "sites,"
                (count (:include-keywords config)) "keywords")
      config)))
@@ -77,7 +110,9 @@
     (try
       ;; Step 1: Scrape all sites
       (log/info "═══ STEP 1: Scraping ═══")
-      (let [all-postings (scraper/scrape-all-sites driver (:sites config) opts)
+      (let [{all-postings :postings last-mod :last-modified}
+                         (scraper/scrape-all-sites driver (:sites config) opts)
+            _            (save-site-state! (merge (load-site-state) last-mod))
             _            (log/info "Total postings scraped:" (count all-postings))
 
             ;; Step 2: Allowlist filter

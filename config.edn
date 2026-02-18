@@ -19,19 +19,22 @@
   {:id   :hn-who-is-hiring
    :type :hn
    :url  "https://news.ycombinator.com/item?id=46857488"  ;; ← Feb 2026; update monthly
-   :name "HN Who's Hiring"}
+   :name "HN Who's Hiring"
+   :last-modified nil}
 
   ;; Elixir Forum job board (Discourse)
   {:id   :elixir-forum
    :type :discourse
    :url  "https://elixirforum.com/c/work/elixir-jobs/16"
-   :name "Elixir Forum Jobs"}
+   :name "Elixir Forum Jobs"
+   :last-modified nil}
 
   ;; Reddit
   {:id   :reddit-elixir-jobs
    :type :reddit
    :url  "https://old.reddit.com/r/elixirjobs/"
-   :name "r/elixirjobs"}
+   :name "r/elixirjobs"
+   :last-modified nil}
 
   ;; Twitter/X — NOT FUNCTIONAL via scraping.
   #_{:id   :elixir-jobs-twitter
@@ -45,7 +48,8 @@
   {:id   :haskell-discourse
    :type :discourse
    :url  "https://discourse.haskell.org/c/jobs/9"
-   :name "Haskell Discourse Jobs"}
+   :name "Haskell Discourse Jobs"
+   :last-modified nil}
 
   ;; ClojureVerse Jobs (Discourse, but jobs category may have been removed/renamed)
   ;; If this 404s, check https://clojureverse.org/categories for current slug
@@ -63,7 +67,8 @@
    :url              "https://elixirjobs.net"
    :name             "ElixirJobs.net"
    :listing-selector "a[href*='/offers/']"
-   :base-url         "https://elixirjobs.net"}
+   :base-url         "https://elixirjobs.net"
+   :last-modified    nil}
   ;; NOTE: no :content-selector — detail page uses minimal semantic HTML
   ;; without clear container classes. Title-only matching for now.
 
@@ -75,7 +80,8 @@
    :url              "https://elixir-radar.com/jobs"
    :name             "Elixir Radar Jobs"
    :listing-selector "ul li a[href^='https://']:not([href*='elixir-radar.com'])"
-   :base-url         ""}
+   :base-url         ""
+   :last-modified    nil}
   ;; NOTE: selector targets external links in list items. No content-selector
   ;; since each link goes to a different external domain.
 
@@ -94,7 +100,8 @@
    :url              "https://functional.works-hub.com/jobs"
    :name             "Functional Works"
    :listing-selector "a[href^='/jobs/']"
-   :base-url         "https://functional.works-hub.com"}
+   :base-url         "https://functional.works-hub.com"
+   :last-modified    nil}
 
   ;; We Work Remotely — remote programming jobs
   ;; Using category page to avoid nav/CTA noise from homepage.
@@ -104,7 +111,8 @@
    :url              "https://weworkremotely.com/categories/remote-programming-jobs"
    :name             "We Work Remotely"
    :listing-selector "li a[href*='/remote-jobs/']"
-   :base-url         "https://weworkremotely.com"}
+   :base-url         "https://weworkremotely.com"
+   :last-modified    nil}
 
   ;; Remote OK — remote jobs with tech stack filtering
   {:id               :remoteok
@@ -112,7 +120,8 @@
    :url              "https://remoteok.com"
    :name             "Remote OK"
    :listing-selector "a[href*='/remote-']"
-   :base-url         "https://remoteok.com"}
+   :base-url         "https://remoteok.com"
+   :last-modified    nil}
   ;; NOTE: heavily JS-rendered. Selectors are best-guess; may need tuning.
 
   ;; Built In SF — Bay Area tech jobs
@@ -121,7 +130,8 @@
    :url              "https://www.builtinsf.com/jobs"
    :name             "Built In SF"
    :listing-selector "a[href*='/job/']"
-   :base-url         "https://www.builtinsf.com"}
+   :base-url         "https://www.builtinsf.com"
+   :last-modified    nil}
 
   ;; YC Work at a Startup — Y Combinator job board
   {:id               :yc-jobs
@@ -129,7 +139,8 @@
    :url              "https://www.ycombinator.com/jobs/role/software-engineer"
    :name             "YC Work at a Startup"
    :listing-selector "a[href*='/companies/'][href*='/jobs/']"
-   :base-url         "https://www.ycombinator.com"}
+   :base-url         "https://www.ycombinator.com"
+   :last-modified    nil}
 
   ;; ===== SPA / DIFFICULT SITES =====
   ;; These are JavaScript SPAs. etaoin uses a real browser so they may work,

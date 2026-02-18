@@ -3,6 +3,7 @@
    Each method returns a seq of posting maps:
    {:url string, :title string, :text string, :source keyword}"
   (:require [etaoin.api :as e]
+            [clj-http.client :as http]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
 
@@ -299,17 +300,39 @@
 ;; Public API
 ;; ---------------------------------------------------------------------------
 
+(defn- fetch-last-modified
+  "HEAD request to grab the Last-Modified header. Returns the value or nil."
+  [url]
+  (try
+    (let [resp (http/head url {:throw-exceptions false
+                               :socket-timeout   5000
+                               :connection-timeout 5000
+                               :redirect-strategy :lax})]
+      (get-in resp [:headers "Last-Modified"]))
+    (catch Exception e
+      (log/debug "HEAD request failed for" url (.getMessage e))
+      nil)))
+
 (defn scrape-all-sites
-  "Scrape all configured sites. Returns a flat seq of posting maps.
+  "Scrape all configured sites.
+   Returns {:postings [posting-map …]
+            :last-modified {site-id last-modified-value-or-nil …}}
    driver — etaoin browser driver
    sites  — seq of site config maps from config.edn
    opts   — {:request-delay-ms N, :max-postings-per-site N}"
   [driver sites opts]
-  (into []
-        (mapcat (fn [site]
-                  (try
-                    (scrape-site driver site opts)
-                    (catch Exception ex
-                      (log/error ex "Failed to scrape site:" (:id site))
-                      []))))
-        sites))
+  (let [results (mapv (fn [site]
+                        (let [postings (try
+                                         (scrape-site driver site opts)
+                                         (catch Exception ex
+                                           (log/error ex "Failed to scrape site:" (:id site))
+                                           []))
+                              lm       (fetch-last-modified (:url site))]
+                          (when lm
+                            (log/info "  Last-Modified for" (:name site) ":" lm))
+                          {:postings postings
+                           :site-id  (:id site)
+                           :last-modified lm}))
+                      sites)]
+    {:postings      (into [] (mapcat :postings) results)
+     :last-modified (into {} (map (juxt :site-id :last-modified)) results)}))
