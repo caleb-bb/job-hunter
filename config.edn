@@ -42,6 +42,15 @@
      :url  "https://x.com/ElixirJobsOffer"
      :name "Elixir Jobs Twitter"}
 
+  ;; r/rust "Who's Hiring" — periodic thread with job postings in comments
+  ;; Uses Reddit JSON API to search for the latest thread automatically.
+  {:id             :rust-reddit-hiring
+   :type           :reddit-hiring
+   :url            "https://old.reddit.com/r/rust"
+   :name           "r/rust Who's Hiring"
+   :hiring-pattern "who's hiring"
+   :last-modified  nil}
+
   ;; ===== DISCOURSE FORUMS =====
 
   ;; Haskell Discourse Jobs (confirmed Discourse, category ID 9)
