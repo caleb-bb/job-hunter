@@ -185,6 +185,35 @@
         (stop-browser! driver)))))
 
 ;; ---------------------------------------------------------------------------
+;; Single-site scrape
+;; ---------------------------------------------------------------------------
+
+(defn scrape-one!
+  "Scrape a single site by its :id keyword. Returns the list of postings.
+   Example: (scrape-one! :hn-who-is-hiring)
+            (scrape-one! :elixir-forum :dry-run? true)"
+  [site-id & {:keys [dry-run?] :or {dry-run? false}}]
+  (let [config (load-config)
+        site   (first (filter #(= site-id (:id %)) (:sites config)))]
+    (when-not site
+      (throw (ex-info (str "No site with id " site-id " found in config.")
+                      {:available (mapv :id (:sites config))})))
+    (log/info "Scraping single site:" (:name site))
+    (let [opts   {:request-delay-ms     (or (:request-delay-ms config) 2000)
+                  :max-postings-per-site (or (:max-postings-per-site config) 50)}
+          driver (start-browser! (get config :headless? true))]
+      (try
+        (let [postings (scraper/scrape-site driver site opts)]
+          (log/info "Got" (count postings) "postings from" (:name site))
+          (when dry-run?
+            (doseq [{:keys [title url]} postings]
+              (println (str "  " title))
+              (println (str "    " url))))
+          postings)
+        (finally
+          (stop-browser! driver))))))
+
+;; ---------------------------------------------------------------------------
 ;; Entry point
 ;; ---------------------------------------------------------------------------
 
@@ -214,6 +243,13 @@
 
   ;; Check what's in applied.edn
   (tracker/load-applied)
+
+  ;; Scrape a single site
+  (scrape-one! :hn-who-is-hiring)
+  (scrape-one! :elixir-forum :dry-run? true)
+
+  ;; See available site IDs
+  (mapv :id (:sites (load-config)))
 
   ;; Reset tracker (re-process everything)
   (tracker/save-applied! #{})

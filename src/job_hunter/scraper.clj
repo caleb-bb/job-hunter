@@ -45,12 +45,21 @@
     (str (subs s 0 max-len) "...")
     s))
 
+(defn- strip-markdown
+  "Remove basic markdown formatting (bold, italic, links) from text."
+  [s]
+  (-> s
+      (str/replace #"\*\*([^*]+)\*\*" "$1")     ; **bold**
+      (str/replace #"\*([^*]+)\*" "$1")          ; *italic*
+      (str/replace #"\[([^\]]+)\]\([^)]+\)" "$1") ; [text](url)
+      str/trim))
+
 (defn- extract-title-from-text
   "Pull a reasonable title from the first line of posting text.
    HN Who's Hiring comments often start with 'Company | Role | Location'."
   [text]
   (let [first-line (first (str/split-lines text))]
-    (truncate (str/trim (or first-line "Untitled")) 120)))
+    (truncate (strip-markdown (str/trim (or first-line "Untitled"))) 120)))
 
 ;; ---------------------------------------------------------------------------
 ;; Multimethod: dispatch on site :type
@@ -232,6 +241,116 @@
               postings)))
         []
         link-data))))
+
+;; ---------------------------------------------------------------------------
+;; :reddit-hiring — Reddit "Who's Hiring" threads (r/rust, etc.)
+;; ---------------------------------------------------------------------------
+;; Config keys:
+;;   :url            — subreddit base URL (e.g. https://old.reddit.com/r/rust)
+;;   :hiring-pattern — substring to match in thread titles (default "who's hiring")
+;; Uses Reddit's JSON API (not browser) to avoid being blocked:
+;;   1. Search the subreddit for threads matching :hiring-pattern
+;;   2. Fetch top-level comments from the newest matching thread
+;; Comments without an external URL get the Reddit comment permalink instead.
+
+(def ^:private reddit-user-agent "job-hunter/1.0 (clojure)")
+
+(defn- normalize-quotes
+  "Replace Unicode smart quotes/apostrophes with ASCII equivalents."
+  [s]
+  (-> s
+      (str/replace "\u2018" "'")  ; left single
+      (str/replace "\u2019" "'")  ; right single
+      (str/replace "\u201C" "\"") ; left double
+      (str/replace "\u201D" "\""))) ; right double
+
+(defn- reddit-json-search
+  "Search a subreddit via JSON API for the first thread matching `pattern`.
+   Returns the thread's permalink path (e.g. /r/rust/comments/xxx/...) or nil."
+  [subreddit-url pattern]
+  (try
+    (let [search-url (str subreddit-url "/search.json")
+          resp       (http/get search-url
+                       {:query-params {"q"           (str "\"" pattern "\"")
+                                       "restrict_sr" "on"
+                                       "sort"        "new"
+                                       "t"           "year"}
+                        :headers      {"User-Agent" reddit-user-agent}
+                        :as           :json
+                        :throw-exceptions false})
+          posts      (get-in resp [:body :data :children])
+          lc-pattern (str/lower-case pattern)]
+      (when (= 200 (:status resp))
+        (->> posts
+             (filter #(str/includes?
+                        (-> (get-in % [:data :title] "")
+                            str/lower-case
+                            normalize-quotes)
+                        lc-pattern))
+             first
+             :data
+             :permalink)))
+    (catch Exception e
+      (log/warn "Reddit JSON search failed:" (.getMessage e))
+      nil)))
+
+(defn- reddit-json-comments
+  "Fetch top-level comments from a Reddit thread via JSON API.
+   Returns a seq of maps with :body (markdown text), :permalink, :author."
+  [permalink]
+  (try
+    (let [url  (str "https://old.reddit.com" permalink ".json")
+          resp (http/get url
+                 {:query-params {"limit" "500" "depth" "1" "sort" "new"}
+                  :headers      {"User-Agent" reddit-user-agent}
+                  :as           :json
+                  :throw-exceptions false})]
+      (when (= 200 (:status resp))
+        (let [listing  (second (:body resp))
+              children (get-in listing [:data :children])]
+          (->> children
+               (filter #(= "t1" (:kind %)))
+               (map :data)
+               (map (fn [d] {:body      (:body d)
+                             :permalink (str "https://old.reddit.com" (:permalink d))
+                             :author    (:author d)}))))))
+    (catch Exception e
+      (log/warn "Reddit JSON comments failed:" (.getMessage e))
+      nil)))
+
+(defn- extract-url-from-markdown
+  "Find the first external (non-reddit) URL in markdown text."
+  [text]
+  (let [urls (re-seq #"https?://[^\s\)\]>\"']+" text)]
+    (first (remove #(str/includes? % "reddit.com") urls))))
+
+(defmethod scrape-site :reddit-hiring
+  [_driver {:keys [url name hiring-pattern]
+            :or {hiring-pattern "who's hiring"}}
+   {:keys [max-postings-per-site]}]
+  (log/info "Scraping" name "via JSON API —" url)
+  ;; Step 1: Search for the latest hiring thread
+  (let [permalink (reddit-json-search url hiring-pattern)]
+    (if-not permalink
+      (do (log/warn "  No '" hiring-pattern "' thread found on" name)
+          [])
+      (do
+        (log/info "  Found hiring thread:" permalink)
+        ;; Step 2: Fetch top-level comments
+        (let [comments (reddit-json-comments permalink)]
+          (log/info "  Found" (count comments) "top-level comments")
+          (into []
+                (take max-postings-per-site)
+                (keep (fn [{:keys [body permalink author]}]
+                        (when-not (or (str/blank? body)
+                                      ;; Skip mod meta-comments
+                                      (str/starts-with? body "This is the top-level comment for"))
+                          (let [ext-url (extract-url-from-markdown body)]
+                            {:url    (or ext-url permalink)
+                             :title  (extract-title-from-text body)
+                             :text   body
+                             :source :reddit-hiring})))
+                      comments)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; :css — Generic CSS-selector-based scraping
